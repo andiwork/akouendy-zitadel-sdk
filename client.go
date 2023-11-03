@@ -1,17 +1,29 @@
 package auth
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/imroc/req/v3"
 	http_mw "github.com/zitadel/zitadel-go/v2/pkg/api/middleware/http"
 )
 
+var (
+	UserId        string
+	IsAdmin       bool
+	introspection *http_mw.IntrospectionInterceptor
+	once          sync.Once
+)
+
 type ZitadelClient struct {
 	*req.Client
 	*http_mw.IntrospectionInterceptor
+	*ZitadelUser
+	UserId *string
 }
 type ZitadelUser struct {
 	Email              string      `json:"email,omitempty"`
@@ -26,13 +38,19 @@ type ZitadelUser struct {
 	UrnZitadelIamRoles interface{} `json:"urn:zitadel:iam:org:project:roles,omitempty"`
 }
 
-func NewZitadelClient(baseUrl string, keyPath string) *ZitadelClient {
-	introspection, err := http_mw.NewIntrospectionInterceptor(baseUrl, keyPath)
-	if err != nil {
-		log.Fatal(err)
-	}
+func NewZitadelClient(baseUrl string, keyPath string, user *ZitadelUser, userId *string) *ZitadelClient {
+	once.Do(func() {
+		var err error
+		introspection, err = http_mw.NewIntrospectionInterceptor(baseUrl, keyPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	})
+
 	return &ZitadelClient{
 		IntrospectionInterceptor: introspection,
+		ZitadelUser:              user,
+		UserId:                   userId,
 		Client: req.C().
 			SetBaseURL(baseUrl).
 			//SetCommonErrorResult(&ErrorMessage{}).
@@ -55,13 +73,22 @@ func NewZitadelClient(baseUrl string, keyPath string) *ZitadelClient {
 	}
 }
 
-func (c *ZitadelClient) ZitadelAuth(next http.Handler, user *ZitadelUser) http.Handler {
-	return c.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c.R().
+func (client *ZitadelClient) ZitadelAuth(next http.Handler) http.Handler {
+	return client.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		resp, _ := client.R().
 			SetContext(r.Context()).
 			SetHeader("Authorization", r.Header.Get("Authorization")).
-			SetSuccessResult(&user).
+			SetSuccessResult(&client.ZitadelUser).
 			Get("/oidc/v1/userinfo")
+		if resp.IsSuccessState() {
+			fmt.Println("Get ZitadelUser")
+			fmt.Println(client.ZitadelUser)
+			algorithm := md5.New()
+			algorithm.Write([]byte(client.ZitadelUser.Email))
+			*client.UserId = hex.EncodeToString(algorithm.Sum(nil))
+
+		}
 		next.ServeHTTP(w, r)
 	})
 }
