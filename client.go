@@ -85,7 +85,7 @@ func (client *ZitadelClient) ZitadelAuth(next http.Handler) http.Handler {
 		store, ok := getCache().Get(cacheKey)
 		if ok {
 			log.Println("==== get user from cache")
-			client.ZitadelUser = store.(*ZitadelUser)
+			client = store.(*ZitadelClient)
 		} else {
 			log.Println("==== get user from auth server")
 			resp, _ := client.R().
@@ -97,10 +97,9 @@ func (client *ZitadelClient) ZitadelAuth(next http.Handler) http.Handler {
 				fmt.Println("Get ZitadelUser")
 				fmt.Println(client.ZitadelUser)
 				*client.UserId = md5hash(client.ZitadelUser.Email)
-				getCache().Set(cacheKey, client.ZitadelUser, cache.DefaultExpiration)
+				getCache().Set(cacheKey, client, cache.DefaultExpiration)
 			}
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
