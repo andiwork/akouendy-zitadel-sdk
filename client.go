@@ -7,16 +7,21 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
+
+	"github.com/patrickmn/go-cache"
 
 	"github.com/imroc/req/v3"
 	http_mw "github.com/zitadel/zitadel-go/v2/pkg/api/middleware/http"
 )
 
 var (
-	UserId        string
-	IsAdmin       bool
-	introspection *http_mw.IntrospectionInterceptor
-	once          sync.Once
+	UserId            string
+	IsAdmin           bool
+	introspection     *http_mw.IntrospectionInterceptor
+	once              sync.Once
+	userCacheInstance *cache.Cache
+	userOnceCache     sync.Once
 )
 
 type ZitadelClient struct {
@@ -75,20 +80,40 @@ func NewZitadelClient(baseUrl string, keyPath string, user *ZitadelUser, userId 
 
 func (client *ZitadelClient) ZitadelAuth(next http.Handler) http.Handler {
 	return client.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-		resp, _ := client.R().
-			SetContext(r.Context()).
-			SetHeader("Authorization", r.Header.Get("Authorization")).
-			SetSuccessResult(&client.ZitadelUser).
-			Get("/oidc/v1/userinfo")
-		if resp.IsSuccessState() {
-			fmt.Println("Get ZitadelUser")
-			fmt.Println(client.ZitadelUser)
-			algorithm := md5.New()
-			algorithm.Write([]byte(client.ZitadelUser.Email))
-			*client.UserId = hex.EncodeToString(algorithm.Sum(nil))
-
+		token := r.Header.Get("Authorization")
+		cacheKey := md5hash((token))
+		store, ok := getCache().Get(cacheKey)
+		if ok {
+			log.Println("==== get user from cache")
+			client.ZitadelUser = store.(*ZitadelUser)
+		} else {
+			log.Println("==== get user from auth server")
+			resp, _ := client.R().
+				SetContext(r.Context()).
+				SetHeader("Authorization", token).
+				SetSuccessResult(&client.ZitadelUser).
+				Get("/oidc/v1/userinfo")
+			if resp.IsSuccessState() {
+				fmt.Println("Get ZitadelUser")
+				fmt.Println(client.ZitadelUser)
+				*client.UserId = md5hash(client.ZitadelUser.Email)
+				getCache().Set(cacheKey, client.ZitadelUser, cache.DefaultExpiration)
+			}
 		}
+
 		next.ServeHTTP(w, r)
 	})
+}
+func md5hash(text string) string {
+	algorithm := md5.New()
+	algorithm.Write([]byte(text))
+	return hex.EncodeToString(algorithm.Sum(nil))
+}
+
+func getCache() *cache.Cache {
+	userOnceCache.Do(func() {
+		userCacheInstance = cache.New(5*time.Minute, 10*time.Minute)
+	})
+	return userCacheInstance
+
 }
